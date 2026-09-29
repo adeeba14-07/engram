@@ -8,3 +8,4 @@ python-dotenv
 groq
 hindsight-client
 pydantic[email]
+bcrypt==4.0.1
