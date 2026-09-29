@@ -3,7 +3,8 @@
 
 Tell Engram about your laptop once. It remembers every symptom and every fix, so you never explain the same problem twice.
 
-## Live demo: https://engram-frontend-nine.vercel.app
+## Live demo: 
+https://engram-frontend-nine.vercel.app
 
 ## What it does
 Engram is a laptop troubleshooting agent with persistent memory. You sign up, describe your device once, and from then on the agent remembers it: the symptoms you've reported, the fixes it suggested, and whether those fixes worked.
