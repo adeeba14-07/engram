@@ -33,7 +33,6 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------------------- helpers -----
 def _device_dict(user_id, db):
     d = db.query(Device).filter(Device.user_id == user_id).first()
     if not d:
@@ -54,7 +53,8 @@ def _default_chat(user_id, db):
         .order_by(Chat.created_at.desc()).first()
     if chat:
         return chat
-    chat = Chat(id=str(uuid4()), user_id=user_id, title="New chat")
+    chat = Chat(id=str(uuid4()), user_id=user_id, title="New chat",
+                memory_enabled=True)
     db.add(chat)
     db.commit()
     db.refresh(chat)
@@ -75,7 +75,6 @@ def _recent_outcomes(user_id, db, limit=5):
     return out
 
 
-# ---------------------------------------------------------------- auth -----
 @app.post("/api/auth/signup", response_model=AuthResponse)
 def signup(body: SignupRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
@@ -95,7 +94,6 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     return {"token": create_token(user.id), "user_id": user.id}
 
 
-# ----------------------------------------------------------- onboarding ------
 @app.post("/api/onboarding")
 def onboarding(body: OnboardingRequest,
                user: User = Depends(get_current_user),
@@ -143,7 +141,6 @@ def device_changes(user: User = Depends(get_current_user),
     } for r in rows]
 
 
-# --------------------------------------------------------------- chat --------
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(body: ChatRequest, user: User = Depends(get_current_user),
          db: Session = Depends(get_db)):
@@ -155,7 +152,10 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user),
     else:
         chat_obj = _default_chat(user.id, db)
 
-    # Auto-title the chat from the first user message
+    if body.memory_enabled is not None:
+        chat_obj.memory_enabled = body.memory_enabled
+        db.commit()
+
     if chat_obj.title in ("New chat", "Chat") or not chat_obj.title:
         chat_obj.title = (body.message or "New chat")[:60]
         db.commit()
@@ -174,6 +174,7 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user),
 
     device = _device_dict(user.id, db)
     outcomes = _recent_outcomes(user.id, db)
+    memory_on = bool(chat_obj.memory_enabled)
 
     try:
         result = agent.handle_chat(
@@ -181,11 +182,12 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user),
             media_base64=body.media_base64,
             media_type=body.media_type,
             prior_outcomes=outcomes,
+            memory_enabled=memory_on,
         )
     except Exception as e:
         raise HTTPException(500, f"Chat failed: {e}")
 
-    used = [m for m in result["memories"] if m.get("used")]
+    used = [m for m in result["memories"] if m.get("used_in_prompt")]
     asst_msg = Message(
         id=str(uuid4()), chat_id=chat_obj.id, user_id=user.id,
         role="assistant", content=result["reply"],
@@ -205,7 +207,6 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user),
     }
 
 
-# --------------------------------------------------------------- chats -------
 @app.get("/api/chats", response_model=list[ChatOut])
 def list_chats(user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
@@ -213,7 +214,8 @@ def list_chats(user: User = Depends(get_current_user),
                                  Chat.archived == False)\
         .order_by(Chat.created_at.desc()).all()
     return [{"id": c.id, "title": c.title,
-             "created_at": c.created_at.isoformat()} for c in rows]
+             "created_at": c.created_at.isoformat(),
+             "memory_enabled": bool(c.memory_enabled)} for c in rows]
 
 
 @app.post("/api/chats", response_model=ChatOut)
@@ -222,12 +224,14 @@ def new_chat(body: NewChatRequest,
              db: Session = Depends(get_db)):
     count = db.query(Chat).filter(Chat.user_id == user.id).count()
     c = Chat(id=str(uuid4()), user_id=user.id,
-             title=body.title or f"Chat {count + 1}")
+             title=body.title or f"Chat {count + 1}",
+             memory_enabled=True)
     db.add(c)
     db.commit()
     db.refresh(c)
     return {"id": c.id, "title": c.title,
-            "created_at": c.created_at.isoformat()}
+            "created_at": c.created_at.isoformat(),
+            "memory_enabled": bool(c.memory_enabled)}
 
 
 @app.delete("/api/chats/{chat_id}")
@@ -272,7 +276,6 @@ def chat_messages(chat_id: str, user: User = Depends(get_current_user),
     } for m in msgs]
 
 
-# -------------------------------------------------------------- messages -----
 @app.delete("/api/messages/{message_id}")
 def delete_message(message_id: str, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
@@ -312,7 +315,6 @@ def edit_message(message_id: str, body: EditMessageRequest,
     return {"ok": True}
 
 
-# -------------------------------------------------------------- outcomes -----
 @app.post("/api/messages/{message_id}/outcome")
 def record_outcome(message_id: str, body: OutcomeRequest,
                    user: User = Depends(get_current_user),
@@ -334,7 +336,6 @@ def record_outcome(message_id: str, body: OutcomeRequest,
     return {"ok": True}
 
 
-# --------------------------------------------------------------- memory ------
 @app.get("/api/memory")
 def memory(user: User = Depends(get_current_user)):
     return {"facts": agent.get_all_facts(user.id)}

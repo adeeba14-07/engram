@@ -34,7 +34,8 @@ class ChatRequest(BaseModel):
     message: str
     chat_id: Optional[str] = None
     media_base64: Optional[str] = None
-    media_type: Optional[str] = None      # "image" | "video"
+    media_type: Optional[str] = None
+    memory_enabled: Optional[bool] = None
 
 
 class MemoryItem(BaseModel):
@@ -42,12 +43,16 @@ class MemoryItem(BaseModel):
     text: str
     when: Optional[str] = None
     used: bool = False
+    used_in_prompt: Optional[bool] = None
     score: Optional[float] = None
 
 
 class RecallExplanation(BaseModel):
     query: str
     total_in_bank: int
+    unique_facts: Optional[int] = None
+    merged_duplicates: Optional[int] = None
+    strong_matches: Optional[int] = None
     matched: List[MemoryItem]
     dropped: int
 
@@ -69,6 +74,7 @@ class ChatOut(BaseModel):
     id: str
     title: str
     created_at: str
+    memory_enabled: bool
 
 
 class MessageOut(BaseModel):
@@ -88,4 +94,4 @@ class EditMessageRequest(BaseModel):
 
 
 class OutcomeRequest(BaseModel):
-    value: str      # "worked" | "failed" | "unsure"
+    value: str

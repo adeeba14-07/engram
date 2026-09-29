@@ -1,15 +1,4 @@
-"""Engram / FixMate — recall → respond → retain, per user, backed by Hindsight.
-
-Fixes applied:
-  001 — score is now computed from real keyword overlap (0.0–1.0)
-  002 — dedupe before return; no double-retain on same fact
-  003 — 'used_in_prompt' computed from score >= 0.4 (not Hindsight's 'used')
-  004 — relevance ranking (score) beats recency
-  005 — only top-K with score >= 0.4 goes into the Groq prompt
-  007 — prompt enforces 2+ counter-questions before a fix
-  008 — safety classifier warns before physical repairs
-  009 — retains as "FixMate" not "Engram"
-"""
+"""Engram — recall → respond → retain, per user, backed by Hindsight."""
 import asyncio
 import json
 import re
@@ -28,27 +17,24 @@ hindsight = Hindsight(base_url=HINDSIGHT_BASE_URL, api_key=HINDSIGHT_API_KEY)
 
 MODEL = "openai/gpt-oss-120b"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-PRODUCT_NAME = "FixMate"
+PRODUCT_NAME = "Engram"
 
 MAX_RECALL = 6
 MAX_BANK_SCAN = 100
 BANK_PREFIX = "engram-user"
 
 SIMILARITY_THRESHOLD = 0.75
-STRONG_MATCH = 0.40          # score >= this means "shaped this reply"
-DEBUG_PROMPTS = False        # set True to log prompts to Render
+STRONG_MATCH = 0.40
+DEBUG_PROMPTS = False
 
-# Physical-repair keywords → trigger safety warning
 PHYSICAL_FIX_KEYWORDS = [
     "replace the fan", "open the laptop", "disassemble",
     "thermal paste", "open the case", "replace the battery",
     "solder", "open the back",
 ]
 
-# Ultrabook / non-serviceable brands → extra warning
 NON_SERVICEABLE = ["surface", "macbook", "xps 13", "dell xps", "framework"]
 
-# Event loop shared across all Hindsight calls
 _loop = asyncio.new_event_loop()
 _loop_thread = threading.Thread(target=_loop.run_forever, daemon=True)
 _loop_thread.start()
@@ -90,9 +76,6 @@ def _keywords(text: str) -> set:
 
 
 def _relevance(query_kw: set, memory_text: str) -> float:
-    """Symmetric keyword-overlap score: intersection / min(len_a, len_b).
-    This returns 1.0 when one side is a subset of the other, which is what
-    we want for short queries like 'fan' matching short memories."""
     if not query_kw:
         return 0.0
     mem_kw = _keywords(memory_text)
@@ -171,12 +154,6 @@ def _fetch_raw(bank_id: str) -> list:
 
 # ----------------------------------------------------------- recall ----------
 def recall_memories(bank_id: str, query: str):
-    """Return (matched, explanation).
-       - Dedupe similar facts
-       - Score by keyword relevance (0.0–1.0)
-       - Sort by score, tie-break by recency
-       - Compute used_in_prompt from score >= STRONG_MATCH
-    """
     raw = _fetch_raw(bank_id)
     deduped = _dedupe_and_merge(raw)
 
@@ -184,10 +161,7 @@ def recall_memories(bank_id: str, query: str):
     for d in deduped:
         d["score"] = _relevance(query_kw, d["text"])
 
-    # Rank by score first, recency second
     deduped.sort(key=lambda d: (-d["score"], -d["_when_ts"]))
-
-    # Take top-K regardless of score, but flag which ones are "strong"
     matched = deduped[:MAX_RECALL]
 
     for i, m in enumerate(matched, 1):
@@ -286,7 +260,6 @@ def _needs_safety_warning(reply: str) -> bool:
 def build_prompt(name, device, message, memories, prior_outcomes=None):
     device_line = _device_line(device)
 
-    # Only memories with score >= STRONG_MATCH go into the prompt
     strong = [m for m in memories if m.get("score", 0) >= STRONG_MATCH]
     weak = [m for m in memories if m.get("score", 0) < STRONG_MATCH]
 
@@ -298,7 +271,6 @@ RELEVANT MEMORY (highest confidence):
 {block}
 """
 
-    # Weak matches get listed separately, clearly marked low-confidence
     weak_block = ""
     if weak:
         weak_lines = "\n".join(f"- {m['text']}  (low match)" for m in weak[:3])
@@ -329,6 +301,7 @@ RULES:
 - NEVER recommend physical repairs (opening, cleaning vents, replacing parts) in the first reply.
 - If the user asks about physical repairs, ask about warranty status first.
 - Reference memory only when relevant. Do not invent facts.
+- If the message is not about a laptop or tech support, politely say you can only help with laptop issues.
 - 2-3 sentences.
 
 {name} says: {message}
@@ -336,7 +309,6 @@ RULES:
 Return ONLY JSON:
 {{"reply": "...", "used": [1,2], "influence": "..."}}"""
 
-    # No relevant memory at all
     return f"""You are {PRODUCT_NAME}, a careful laptop troubleshooting assistant for {name}.
 {device_line}{safety}
 
@@ -345,6 +317,7 @@ No relevant memory for this message.
 RULES:
 - Ask at least 2 focused diagnostic questions before suggesting anything.
 - Do not invent facts.
+- If the message is not about a laptop or tech support, politely say you can only help with laptop issues.
 - 2-3 sentences.
 
 {name} says: {message}
@@ -433,7 +406,7 @@ def write_device_facts(user_id, name, device: dict):
 # ----------------------------------------------------------- main ------------
 def handle_chat(user_id, name, device, message,
                 media_base64=None, media_type=None,
-                prior_outcomes=None):
+                prior_outcomes=None, memory_enabled=True):
     message = (message or "").strip()
     if not message and not media_base64:
         raise ValueError("Message is empty")
@@ -454,29 +427,36 @@ def handle_chat(user_id, name, device, message,
     if media_text:
         full_message = f"{message}\n[Attached {media_type}: {media_text}]"
 
-    memories, explanation = recall_memories(bank_id, full_message)
+    if memory_enabled:
+        memories, explanation = recall_memories(bank_id, full_message)
+    else:
+        memories = []
+        explanation = {
+            "query": full_message,
+            "total_in_bank": 0,
+            "unique_facts": 0,
+            "merged_duplicates": 0,
+            "strong_matches": 0,
+            "matched": [],
+            "dropped": 0,
+        }
 
     prompt = build_prompt(name, device, full_message, memories, prior_outcomes)
     raw = call_llm(prompt)
     reply, used, influence = parse_json(raw)
 
-    # Which memories did the LLM cite as used?
     cited = {m["id"] for m in memories if m["id"] in used}
-
-    # A memory shows "shaped this reply" only if:
-    # 1. Its score cleared the STRONG_MATCH threshold, AND
-    # 2. The LLM actually cited it
     for m in memories:
         m["used_in_prompt"] = m["score"] >= STRONG_MATCH and m["id"] in cited
 
     retained = False
-    try:
-        retain_content(bank_id, f"{name} said: {full_message}. {PRODUCT_NAME} replied: {reply}")
-        retained = True
-    except Exception as e:
-        print(f"RETAIN FAILED: {type(e).__name__}: {e}")
+    if memory_enabled:
+        try:
+            retain_content(bank_id, f"{name} said: {full_message}. {PRODUCT_NAME} replied: {reply}")
+            retained = True
+        except Exception as e:
+            print(f"RETAIN FAILED: {type(e).__name__}: {e}")
 
-    # Add safety footer if the reply recommends physical repair
     if _needs_safety_warning(reply):
         reply = reply + "\n\n⚠️ Before attempting any physical repair, check your warranty. If unsure, contact the manufacturer's support."
 
@@ -517,21 +497,12 @@ def get_timeline(user_id: str) -> dict:
     return {"timeline": [], "facts": get_all_facts(user_id)}
 
 
-# ----------------------------------------------------------- health ----------
 def health_check():
-    """Runs at startup. Prints diagnostics for BUG-001."""
     print(f"[{PRODUCT_NAME} agent] health check")
     print(f"  HINDSIGHT_API_KEY present: {bool(HINDSIGHT_API_KEY)}")
     print(f"  HINDSIGHT_API_KEY prefix:  {HINDSIGHT_API_KEY[:12] if HINDSIGHT_API_KEY else 'MISSING'}")
     print(f"  HINDSIGHT_BASE_URL:        {HINDSIGHT_BASE_URL}")
     print(f"  GROQ_API_KEY present:      {bool(GROQ_API_KEY)}")
-    try:
-        h = Hindsight(base_url=HINDSIGHT_BASE_URL, api_key=HINDSIGHT_API_KEY)
-        attrs = [a for a in dir(h) if not a.startswith("_")]
-        embedder_like = [a for a in attrs if "embed" in a.lower()]
-        print(f"  Hindsight embedder attrs:  {embedder_like or 'none visible'}")
-    except Exception as e:
-        print(f"  Hindsight client init error: {e}")
 
 
 health_check()

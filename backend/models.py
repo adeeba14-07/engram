@@ -13,13 +13,12 @@ class User(Base):
 
 
 class Device(Base):
-    """Stable facts about the user's device."""
     __tablename__ = "devices"
     user_id = Column(String, ForeignKey("users.id"), primary_key=True)
     brand = Column(String, nullable=False)
     model = Column(String, nullable=False)
-    os_name = Column(String, nullable=False)          # "Windows"
-    os_version = Column(String, nullable=False)       # "11 23H2"
+    os_name = Column(String, nullable=False)
+    os_version = Column(String, nullable=False)
     os_updated_at = Column(DateTime(timezone=True), nullable=True)
     age_months = Column(Integer, nullable=False)
     ram_gb = Column(Integer, nullable=True)
@@ -29,7 +28,6 @@ class Device(Base):
 
 
 class DeviceChange(Base):
-    """Track changes like OS updates: what changed, when."""
     __tablename__ = "device_changes"
     id = Column(String, primary_key=True, index=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
@@ -46,6 +44,7 @@ class Chat(Base):
     title = Column(String, nullable=False, default="New chat")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     archived = Column(Boolean, nullable=False, default=False)
+    memory_enabled = Column(Boolean, nullable=False, default=True)
 
 
 class Message(Base):
@@ -53,21 +52,20 @@ class Message(Base):
     id = Column(String, primary_key=True, index=True)
     chat_id = Column(String, ForeignKey("chats.id"), nullable=False, index=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    role = Column(String, nullable=False)                # "user" | "assistant"
+    role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
     media_path = Column(String, nullable=True)
-    media_type = Column(String, nullable=True)           # "image" | "video"
-    used_memories = Column(Text, nullable=True)          # JSON
-    recall_explanation = Column(Text, nullable=True)     # JSON
+    media_type = Column(String, nullable=True)
+    used_memories = Column(Text, nullable=True)
+    recall_explanation = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     deleted = Column(Boolean, nullable=False, default=False)
 
 
 class Outcome(Base):
-    """Worked / Didn't work / Not sure feedback on an assistant reply."""
     __tablename__ = "outcomes"
     id = Column(String, primary_key=True, index=True)
     message_id = Column(String, ForeignKey("messages.id"), nullable=False, index=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    value = Column(String, nullable=False)               # "worked" | "failed" | "unsure"
+    value = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
