@@ -17,12 +17,12 @@ hindsight = Hindsight(base_url=HINDSIGHT_BASE_URL, api_key=HINDSIGHT_API_KEY)
 
 MODEL = "openai/gpt-oss-120b"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-MAX_RECALL = 6                # only what matters goes to the LLM
-MAX_BANK_SCAN = 100           # scan everything, then filter
+MAX_RECALL = 6
+MAX_BANK_SCAN = 100
 BANK_PREFIX = "engram-user"
 
-# One persistent event loop — asyncio.run() closes the loop and kills
-# aiohttp's connection pool, causing "Event loop is closed" on next call.
+SIMILARITY_THRESHOLD = 0.75
+
 _loop = asyncio.new_event_loop()
 _loop_thread = threading.Thread(target=_loop.run_forever, daemon=True)
 _loop_thread.start()
@@ -48,11 +48,12 @@ def ensure_bank(bank_id: str):
         pass
 
 
-# ----------------------------------------------------------- recall filter ---
+# ----------------------------------------------------------- text utils ------
 STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "my", "i", "me", "you",
     "it", "this", "that", "of", "to", "for", "on", "in", "and", "or", "with",
     "have", "has", "had", "be", "been", "being", "do", "does", "did", "but",
+    "when", "about", "into", "from", "used", "uses", "using",
 }
 
 
@@ -71,46 +72,104 @@ def _relevance(query_kw: set, memory_text: str) -> float:
     return round(overlap / max(len(query_kw), 1), 3)
 
 
-def recall_memories(bank_id: str, query: str):
-    """Return (matched_memories, explanation). Filters by keyword overlap."""
+def _strip_meta(text: str) -> str:
+    return text.split("|")[0].strip()
+
+
+def _normalize(text: str) -> str:
+    base = _strip_meta(text).lower()
+    base = re.sub(r"[^\w\s]", " ", base)
+    base = re.sub(r"\s+", " ", base).strip()
+    return base
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _is_similar(text_a: str, text_b: str) -> bool:
+    if _normalize(text_a) == _normalize(text_b):
+        return True
+    ka, kb = _keywords(text_a), _keywords(text_b)
+    return _jaccard(ka, kb) >= SIMILARITY_THRESHOLD
+
+
+def _merge_group(items: list) -> dict:
+    def sort_key(m):
+        return (-len(m["text"]), -(m.get("_when_ts") or 0))
+    return sorted(items, key=sort_key)[0]
+
+
+def _dedupe_and_merge(raw: list) -> list:
+    """Group similar memories, keep one representative per group."""
+    groups = []
+    for entry in raw:
+        placed = False
+        for g in groups:
+            if _is_similar(entry["text"], g[0]["text"]):
+                g.append(entry)
+                placed = True
+                break
+        if not placed:
+            groups.append([entry])
+    return [_merge_group(g) for g in groups]
+
+
+def _fetch_raw(bank_id: str) -> list:
     res = _run(hindsight.alist_memories(bank_id=bank_id, limit=MAX_BANK_SCAN))
     items = getattr(res, "items", None) or getattr(res, "results", None) or []
-
-    query_kw = _keywords(query)
-    scored = []
+    raw = []
     for m in items:
-        text = getattr(m, "text", "") or ""
+        text = (getattr(m, "text", "") or "").strip()
         if not text:
             continue
-        score = _relevance(query_kw, text)
-        when = (
+        when_obj = (
             getattr(m, "occurred_start", None)
             or getattr(m, "mentioned_at", None)
             or getattr(m, "updated_at", None)
         )
-        scored.append({
-            "text": text,
-            "when": when.isoformat() if hasattr(when, "isoformat") else (str(when) if when else None),
-            "score": score,
-        })
+        if hasattr(when_obj, "timestamp"):
+            when_iso = when_obj.isoformat()
+            when_ts = when_obj.timestamp()
+        else:
+            when_iso = str(when_obj) if when_obj else None
+            when_ts = 0
+        raw.append({"text": text, "when": when_iso, "_when_ts": when_ts})
+    return raw
 
-    matched = [s for s in scored if s["score"] > 0]
-    matched.sort(key=lambda s: (-s["score"], s["when"] or ""))
+
+# ----------------------------------------------------------- recall ----------
+def recall_memories(bank_id: str, query: str):
+    """Fetch, dedupe, score, rank. Returns (matched, explanation)."""
+    raw = _fetch_raw(bank_id)
+    deduped = _dedupe_and_merge(raw)
+
+    query_kw = _keywords(query)
+    for d in deduped:
+        d["score"] = _relevance(query_kw, d["text"])
+
+    matched = [d for d in deduped if d["score"] > 0]
+    matched.sort(key=lambda d: (-d["score"], -d["_when_ts"]))
 
     if not matched:
-        recent = sorted(scored, key=lambda s: s["when"] or "", reverse=True)[:3]
-        matched = recent
+        matched = sorted(deduped, key=lambda d: -d["_when_ts"])[:3]
 
     matched = matched[:MAX_RECALL]
+
     for i, m in enumerate(matched, 1):
         m["id"] = i
         m["used"] = False
+        m.pop("_when_ts", None)
 
     explanation = {
         "query": query,
-        "total_in_bank": len(scored),
+        "total_in_bank": len(raw),
+        "unique_facts": len(deduped),
+        "merged_duplicates": len(raw) - len(deduped),
         "matched": matched,
-        "dropped": max(0, len(scored) - len(matched)),
+        "dropped": max(0, len(deduped) - len(matched)),
     }
     return matched, explanation
 
@@ -350,22 +409,12 @@ def record_outcome(user_id, message_content, outcome_value):
 
 
 def get_all_facts(user_id):
+    """Return all unique facts in the user's bank, sorted by date."""
     bank_id = bank_for(user_id)
     try:
-        res = _run(hindsight.alist_memories(bank_id=bank_id, limit=200))
-        items = getattr(res, "items", None) or getattr(res, "results", None) or []
-        facts = []
-        for m in items:
-            text = getattr(m, "text", "") or ""
-            if not text:
-                continue
-            when = (getattr(m, "occurred_start", None)
-                    or getattr(m, "mentioned_at", None)
-                    or getattr(m, "updated_at", None))
-            facts.append({
-                "text": text,
-                "when": when.isoformat() if hasattr(when, "isoformat") else None,
-            })
+        raw = _fetch_raw(bank_id)
+        deduped = _dedupe_and_merge(raw)
+        facts = [{"text": d["text"], "when": d["when"]} for d in deduped]
         facts.sort(key=lambda f: f["when"] or "")
         return facts
     except Exception:
