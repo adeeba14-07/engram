@@ -301,18 +301,40 @@ def edit_message(message_id: str, body: EditMessageRequest,
                                  Message.user_id == user.id).first()
     if not m:
         raise HTTPException(404, "Message not found")
+
     old = m.content
     m.content = body.content
     m.used_memories = None
     m.recall_explanation = None
     db.commit()
+
+    # Delete the assistant reply that followed this message
+    next_msg = db.query(Message).filter(
+        Message.chat_id == m.chat_id,
+        Message.user_id == user.id,
+        Message.role == "assistant",
+        Message.created_at > m.created_at,
+        Message.deleted == False,
+    ).order_by(Message.created_at.asc()).first()
+
+    if next_msg:
+        next_msg.deleted = True
+        db.commit()
+        try:
+            agent.delete_memories_matching(
+                agent.bank_for(user.id), next_msg.content[:60]
+            )
+        except Exception:
+            pass
+
     try:
         bank = agent.bank_for(user.id)
         agent.delete_memories_matching(bank, old[:60])
         agent.retain_content(bank, f"{user.name} said: {body.content}")
     except Exception:
         pass
-    return {"ok": True}
+
+    return {"ok": True, "reply_deleted": next_msg.id if next_msg else None}
 
 
 @app.post("/api/messages/{message_id}/outcome")
