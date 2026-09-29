@@ -53,6 +53,7 @@ class RecallExplanation(BaseModel):
     unique_facts: Optional[int] = None
     merged_duplicates: Optional[int] = None
     strong_matches: Optional[int] = None
+    weak_matches: Optional[int] = None          # ← NEW
     matched: List[MemoryItem]
     dropped: int
 
