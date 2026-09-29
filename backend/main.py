@@ -17,12 +17,16 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Engram API")
 
+# CORS: allow any origin, but credentials must be False when using "*".
+# (allow_origins=["*"] + allow_credentials=True is rejected by browsers,
+#  and Starlette then sends NO CORS headers at all — which breaks everything.)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -50,7 +54,11 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/onboarding")
-def onboarding(body: OnboardingRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def onboarding(
+    body: OnboardingRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     existing = db.query(Device).filter(Device.user_id == user.id).first()
     if existing:
         existing.brand = body.brand
@@ -58,10 +66,18 @@ def onboarding(body: OnboardingRequest, user: User = Depends(get_current_user), 
         existing.os = body.os
         existing.age_months = body.age_months
     else:
-        db.add(Device(user_id=user.id, brand=body.brand, model=body.model, os=body.os, age_months=body.age_months))
+        db.add(Device(
+            user_id=user.id,
+            brand=body.brand,
+            model=body.model,
+            os=body.os,
+            age_months=body.age_months,
+        ))
     db.commit()
     try:
-        agent.write_device_facts(user.id, user.name, body.brand, body.model, body.os, body.age_months)
+        agent.write_device_facts(
+            user.id, user.name, body.brand, body.model, body.os, body.age_months
+        )
     except Exception as e:
         raise HTTPException(500, f"Memory write failed: {e}")
     return {"ok": True}
@@ -87,8 +103,10 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
         "name": user.name,
         "email": user.email,
         "device": {
-            "brand": device.brand, "model": device.model,
-            "os": device.os, "age_months": device.age_months,
+            "brand": device.brand,
+            "model": device.model,
+            "os": device.os,
+            "age_months": device.age_months,
         } if device else None,
     }
 
