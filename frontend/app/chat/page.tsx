@@ -247,7 +247,7 @@ export default function Chat() {
           <div className="flex justify-center border-b border-line px-4 py-2">
             <div className="inline-flex gap-1 rounded-lg border border-line p-0.5">
               <button className={tab(view === "chat")} onClick={() => setView("chat")}>Chat</button>
-              <button className={tab(view === "timeline")} onClick={() => setView("timeline")}>Timeline</button>
+              <button className={tab(view === "timeline")} onClick={() => setView("timeline")}>History</button>
             </div>
           </div>
           {view === "chat"
