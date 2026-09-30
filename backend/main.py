@@ -76,24 +76,36 @@ def _recent_outcomes(user_id, db, limit=5):
 
 
 def _apply_device_update(user_id, db, update: dict):
-    """Persist device changes detected in chat. Writes to devices + device_changes."""
+    """Persist device changes detected in chat.
+    Handles None values (clears field) and writes to device_changes."""
     if not update:
         return
     d = db.query(Device).filter(Device.user_id == user_id).first()
     if not d:
         return
+
+    os_changed = False
     for field, new_val in update.items():
         old_val = getattr(d, field, None)
         if old_val == new_val:
             continue
+
+        # Record the change
         db.add(DeviceChange(
-            id=str(uuid4()), user_id=user_id, field=field,
+            id=str(uuid4()),
+            user_id=user_id,
+            field=field,
             old_value=str(old_val) if old_val is not None else None,
-            new_value=str(new_val),
+            new_value=str(new_val) if new_val is not None else "—",
         ))
         setattr(d, field, new_val)
+
         if field in ("os_name", "os_version"):
-            d.os_updated_at = datetime.now(timezone.utc)
+            os_changed = True
+
+    if os_changed:
+        d.os_updated_at = datetime.now(timezone.utc)
+
     db.commit()
 
 
@@ -213,6 +225,8 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user),
     try:
         _apply_device_update(user.id, db, result.get("device_update"))
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"DEVICE UPDATE FAILED: {e}")
 
     used = [m for m in result["memories"] if m.get("used_in_prompt")]

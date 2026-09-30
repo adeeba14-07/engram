@@ -67,7 +67,6 @@ LAPTOP_SIGNALS = [
     "ghz", "gb", "tb", "months old", "years old",
 ]
 
-# ---- intents that mean "user is stating a fact" not "asking for help" ----
 STATEMENT_PATTERNS = [
     r"\bi (have |had )?(updated|upgraded|changed|switched|replaced|installed|uninstalled|bought|got|switched)",
     r"\bi('m| am) (using|on|now on|moving|switching|changing)",
@@ -112,35 +111,63 @@ def _has_valid_numbers(text: str) -> bool:
     return True
 
 
-# ----------------------------------------------------------- intent ----------
 def _classify_intent(message: str) -> str:
-    """Return 'statement', 'problem', or 'question'."""
     low = (message or "").lower()
-    # Questions first
     if low.strip().endswith("?") or low.startswith(("what ", "how ", "why ", "when ", "where ", "which ")):
         return "question"
-    # Statement of fact
     for pat in STATEMENT_PATTERNS:
         if re.search(pat, low):
             return "statement"
-    # Problem / symptom
     for pat in PROBLEM_PATTERNS:
         if re.search(pat, low):
             return "problem"
-    # Default: statement (safe — don't spam diagnostic questions)
     return "statement"
 
 
 # ----------------------------------------------------------- device detect ---
+BRAND_PATTERNS = {
+    "HP": [" hp ", " hewlett ", "hp laptop", "hp pavilion", "hp envy", "hp spectre"],
+    "Dell": [" dell ", "dell laptop", "dell xps", "dell latitude", "dell inspiron"],
+    "Lenovo": [" lenovo ", "lenovo laptop", "thinkpad", "ideapad", "lenovo yoga"],
+    "Asus": [" asus ", "zenbook", "vivobook", "asus rog"],
+    "Acer": [" acer ", "aspire", "predator"],
+    "MSI": [" msi "],
+    "Apple": [" apple ", "macbook", " mac "],
+    "Microsoft": [" microsoft ", "surface laptop", "surface pro", "surface book"],
+    "Samsung": [" samsung ", "galaxy book"],
+    "Razer": [" razer "],
+    "Huawei": [" huawei ", "matebook"],
+    "Google": [" chromebook", "pixelbook"],
+}
+
+MODEL_BRANDS = {
+    "latitude": "Dell",
+    "inspiron": "Dell",
+    "xps": "Dell",
+    "thinkpad": "Lenovo",
+    "ideapad": "Lenovo",
+    "yoga": "Lenovo",
+    "zenbook": "Asus",
+    "vivobook": "Asus",
+    "rog": "Asus",
+    "aspire": "Acer",
+    "predator": "Acer",
+    "macbook": "Apple",
+    "surface": "Microsoft",
+    "galaxy": "Samsung",
+    "matebook": "Huawei",
+}
+
+
 def detect_device_update(message: str, current_device: dict | None) -> dict | None:
-    """Parse OS / age / RAM changes from a user message.
+    """Parse OS / brand / model / age / RAM / storage / GPU / CPU changes.
     Returns a dict of fields to update, or None."""
     if not message:
         return None
-    low = message.lower()
+    low = " " + message.lower() + " "
     update = {}
 
-    # OS version detection
+    # ---------- OS ----------
     if "windows 11" in low or "win 11" in low:
         update["os_name"] = "Windows"
         update["os_version"] = "11"
@@ -149,38 +176,148 @@ def detect_device_update(message: str, current_device: dict | None) -> dict | No
         update["os_version"] = "10"
     elif "macos" in low or "mac os" in low or "monterey" in low or "ventura" in low or "sonoma" in low:
         update["os_name"] = "macOS"
-        # leave version alone unless explicitly given
     elif "ubuntu" in low:
         update["os_name"] = "Linux"
         update["os_version"] = "Ubuntu"
-    elif "linux" in low:
+    elif " linux " in low:
         update["os_name"] = "Linux"
 
-    # Age detection
+    # ---------- Brand change ----------
+    change_words = [
+        "switched to", "changed to", "moved to", "switching to",
+        "changing to", "new laptop is", "new laptop is a",
+        "now using", "using now", "bought a", "bought an", "got a",
+        "got an", "purchased a", "purchased an", "upgraded to a",
+        "upgraded to an", "have a", "have an", "i'm using a",
+        "i am using a", "my new", "replaced with",
+    ]
+    change_ctx = any(w in low for w in change_words)
+
+    # Only consider brand change if there's contextual language
+    if change_ctx or "brand" in low or "switched from" in low:
+        for brand_name, keywords in BRAND_PATTERNS.items():
+            for kw in keywords:
+                if kw in low:
+                    update["brand"] = brand_name
+                    break
+            if "brand" in update:
+                break
+
+    # ---------- Model ----------
+    model_patterns = [
+        r"latitude\s*[\w\d]+",
+        r"inspiron\s*[\w\d]+",
+        r"xps\s*[\w\d]+",
+        r"thinkpad\s*[\w\d]+",
+        r"ideapad\s*[\w\d]+",
+        r"yoga\s*[\w\d]*",
+        r"zenbook\s*[\w\d]*",
+        r"vivobook\s*[\w\d]*",
+        r"aspire\s*[\w\d]*",
+        r"predator\s*[\w\d]*",
+        r"macbook\s*(air|pro)?",
+        r"surface\s*(laptop|pro|book)?\s*\d*",
+        r"galaxy\s*book\s*\d*",
+        r"matebook\s*[\w\d]*",
+        r"pavilion\s*[\w\d]*",
+        r"envy\s*[\w\d]*",
+        r"spectre\s*[\w\d]*",
+    ]
+    for pat in model_patterns:
+        m = re.search(pat, low)
+        if m:
+            model_text = m.group(0).strip().title()
+            update["model"] = model_text
+            first_word = model_text.split()[0].lower()
+            if first_word in MODEL_BRANDS and "brand" not in update:
+                update["brand"] = MODEL_BRANDS[first_word]
+            break
+
+    # ---------- Age ----------
     m = re.search(r"(\d{1,4})\s*months?\s*old", low)
     if m:
         update["age_months"] = int(m.group(1))
-    m = re.search(r"(\d{1,2})\s*years?\s*old", low)
-    if m:
-        update["age_months"] = int(m.group(1)) * 12
+    else:
+        m = re.search(r"(\d{1,2})\s*years?\s*old", low)
+        if m:
+            update["age_months"] = int(m.group(1)) * 12
 
-    # RAM detection
+    # "my laptop age is 100" or "age is 100" or "age: 100"
+    if "age_months" not in update and "age" in low:
+        m = re.search(r"age\s*(?:is|:|=|not|its|it'?s)?\s*(?:not\s+)?\d{1,4}\s*(?:it'?s|is)?\s*(\d{1,4})", low)
+        if not m:
+            m = re.search(r"age[^\d]{0,10}(\d{1,4})", low)
+        if m:
+            update["age_months"] = int(m.group(1))
+
+    # "not 84 it's 100" pattern
+    if "age_months" not in update:
+        m = re.search(r"not\s+\d{1,4}\s*,?\s*it'?s?\s+(\d{1,4})", low)
+        if m:
+            update["age_months"] = int(m.group(1))
+
+    # ---------- RAM ----------
     m = re.search(r"(\d{1,3})\s*gb\s*(?:of\s*)?ram", low)
     if m:
         update["ram_gb"] = int(m.group(1))
+    elif " ram " in low:
+        m = re.search(r"(\d{1,3})\s*gb", low)
+        if m:
+            update["ram_gb"] = int(m.group(1))
+
+    # ---------- Storage ----------
+    m = re.search(r"(\d{1,4})\s*(gb|tb)\s*(?:of\s*)?(?:storage|ssd|hdd|disk)", low)
+    if m:
+        val = int(m.group(1))
+        if m.group(2) == "tb":
+            val *= 1024
+        update["storage_gb"] = val
+
+    # ---------- GPU ----------
+    gpu_patterns = [
+        r"rtx\s*\d+\s*\w*", r"gtx\s*\d+\s*\w*", r"radeon\s*\w+",
+        r"intel\s*(?:iris|uhd|hd)", r"apple\s*m\d\s*\w*",
+        r"iris\s*xe", r"uhd\s*\d*",
+    ]
+    for pat in gpu_patterns:
+        m = re.search(pat, low)
+        if m:
+            update["gpu"] = m.group(0).upper().replace("  ", " ").strip()
+            break
+
+    # ---------- CPU ----------
+    cpu_patterns = [
+        r"i[3579]-\d{4,5}\w*",
+        r"ryzen\s*\d\s*\d{4}\w*",
+        r"m[1234]\s*(?:pro|max|ultra)?",
+        r"snapdragon\s*\w+",
+        r"intel\s+core\s+i[3579]",
+    ]
+    for pat in cpu_patterns:
+        m = re.search(pat, low)
+        if m:
+            update["cpu"] = m.group(0).upper().replace("  ", " ").strip()
+            break
 
     if not update:
         return None
 
-    # If nothing actually changed vs current device, skip
+    # ---------- Filter out unchanged values ----------
     if current_device:
-        changed = False
+        filtered = {}
         for k, v in update.items():
             if current_device.get(k) != v:
-                changed = True
-                break
-        if not changed:
-            return None
+                filtered[k] = v
+        update = filtered
+
+    if not update:
+        return None
+
+    # ---------- Brand change with no new model → clear stale model ----------
+    if "brand" in update and "model" not in update:
+        if current_device and current_device.get("model"):
+            # Old model belongs to old brand → clear it
+            update["model"] = None
 
     return update
 
@@ -304,7 +441,6 @@ def _fetch_raw(bank_id: str) -> list:
     return raw
 
 
-# ----------------------------------------------------------- recall ----------
 def recall_memories(bank_id: str, query: str):
     raw = _fetch_raw(bank_id)
     deduped = _dedupe_and_merge(raw)
@@ -337,7 +473,6 @@ def recall_memories(bank_id: str, query: str):
     return matched, explanation
 
 
-# ----------------------------------------------------------- retain ----------
 def retain_content(bank_id: str, content: str, when=None):
     when = when or utcnow()
     last_err = None
@@ -377,7 +512,6 @@ def delete_memories_matching(bank_id: str, fragment: str):
         pass
 
 
-# ----------------------------------------------------------- prompts ---------
 def _device_line(device: dict | None) -> str:
     if not device:
         return ""
@@ -502,7 +636,6 @@ Answer directly in 2-3 sentences. Do not ask diagnostic questions.
 Return ONLY JSON:
 {{"reply": "...", "used": [1,2], "influence": "..."}}"""
 
-    # problem
     return base + f"""
 
 DETECTED INTENT: PROBLEM / SYMPTOM.
@@ -517,7 +650,6 @@ Return ONLY JSON:
 {{"reply": "...", "used": [1,2], "influence": "..."}}"""
 
 
-# ----------------------------------------------------------- LLM ------------
 def call_llm(prompt: str, retries: int = 4) -> str:
     if DEBUG_PROMPTS:
         print("=== PROMPT TO GROQ ===")
@@ -576,7 +708,6 @@ def parse_json(raw: str):
     return raw.strip(), [], ""
 
 
-# ----------------------------------------------------------- device ----------
 def write_device_facts(user_id, name, device: dict):
     bank_id = bank_for(user_id)
     ensure_bank(bank_id)
@@ -598,7 +729,6 @@ def write_device_facts(user_id, name, device: dict):
     retain_content(bank_id, content)
 
 
-# ----------------------------------------------------------- main ------------
 def handle_chat(user_id, name, device, message,
                 media_base64=None, media_type=None,
                 prior_outcomes=None, memory_enabled=True):
@@ -657,7 +787,6 @@ def handle_chat(user_id, name, device, message,
             "dropped": 0,
         }
 
-    # Detect intent + device change
     intent = _classify_intent(full_message)
     device_update = detect_device_update(full_message, device)
 
