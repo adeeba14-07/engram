@@ -7,6 +7,14 @@ export default function ChatSidebar({ chats, currentId, open, onClose, onSelect,
   onSelect: (id: Id) => void; onNew: () => void; onDelete: (id: Id) => void;
 }) {
   const sorted = [...chats].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
+  // The server repeats "Chat N" numbers, so number those default titles here by creation order (1, 2, 3...).
+  const oldestFirst = [...chats].sort((a, b) =>
+    (+new Date(a.created_at) - +new Date(b.created_at)) || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  const label = (c: Chat) => {
+    const t = (c.title ?? "").trim();
+    if (!t || /^chat\s*\d+$/i.test(t)) return `Chat ${oldestFirst.findIndex((x) => x.id === c.id) + 1}`;
+    return t;
+  };
   return (
     <>
       {open && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={onClose} aria-hidden />}
@@ -21,7 +29,7 @@ export default function ChatSidebar({ chats, currentId, open, onClose, onSelect,
             <li key={c.id} className="group relative">
               <button onClick={() => onSelect(c.id)}
                 className={`w-full rounded-lg px-3 py-2 pr-9 text-left text-sm transition hover:bg-subtle ${c.id === currentId ? "bg-brand-soft font-semibold text-brand" : ""}`}>
-                <span className="block truncate">{c.title || "New chat"}</span>
+                <span className="block truncate">{label(c)}</span>
                 <span className="block text-[11px] font-normal text-faint">{fmt(c.created_at)}</span>
               </button>
               <button onClick={() => onDelete(c.id)} aria-label="Delete chat" title="Delete chat"
