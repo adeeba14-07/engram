@@ -1,8 +1,8 @@
 export type Id = number | string;
 
 export type Device = {
-  brand: string;
-  model: string;
+  brand: string | null;
+  model: string | null;
   os_name: string;
   os_version: string;
   os_updated_at?: string | null;
@@ -17,7 +17,7 @@ export type OnboardingPayload = {
   ram_gb?: number; storage_gb?: number; gpu?: string; cpu?: string;
 };
 export type Me = { name: string; email?: string; device: Device | null };
-export type DeviceChange = { field: string; old_value: string; new_value: string; changed_at: string };
+export type DeviceChange = { field: string; old_value: string | null; new_value: string | null; changed_at: string };
 
 export type Chat = { id: Id; title: string | null; created_at: string; memory_enabled?: boolean };
 export type Outcome = "worked" | "failed" | "unsure";

@@ -57,7 +57,7 @@ export default function ChatPanel({ me, messages, previews, live, loading, onSen
         {messages.length === 0 && !loading && (
           <div className="mx-auto mt-16 max-w-md text-center">
             <h2 className="text-xl font-bold">Hi {me?.name ?? "there"} 👋</h2>
-            {d && <p className="mt-2 text-sm text-ink-muted">I know you're on a {d.brand} {d.model} running {d.os_name} {d.os_version}.</p>}
+            {d && <p className="mt-2 text-sm text-ink-muted">I know you're on {[d.brand, d.model].filter(Boolean).length ? `a ${[d.brand, d.model].filter(Boolean).join(" ")}` : "your laptop"} running {d.os_name} {d.os_version}.</p>}
             <p className="mt-1 text-sm text-ink-muted">What's going on today?</p>
           </div>
         )}

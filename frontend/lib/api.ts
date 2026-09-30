@@ -25,7 +25,7 @@ async function req<T>(path: string, init: RequestInit = {}, auth = true): Promis
   if (auth && token) headers.Authorization = `Bearer ${token}`;
   let res: Response;
   try {
-    res = await fetch(`${BASE}/api${path}`, { ...init, headers });
+    res = await fetch(`${BASE}/api${path}`, { ...init, headers, cache: "no-store" });
   } catch {
     throw new Error("Can't reach the server. Check your connection and try again.");
   }
