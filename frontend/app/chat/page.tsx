@@ -1,6 +1,6 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ChatPanel, { Attachment } from "@/components/ChatPanel";
 import ChatSidebar from "@/components/ChatSidebar";
 import Logo from "@/components/Logo";
@@ -33,11 +33,16 @@ export default function Chat() {
   const [ready, setReady] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [memoryPrefs, setMemoryPrefs] = useState<Record<string, boolean>>({}); // local toggles not yet saved by a send
+  const [editedIds, setEditedIds] = useState<Set<string>>(new Set());
 
-  const refreshSide = useCallback(async () => {
-    const [mem, ch, m] = await Promise.allSettled([api.memory(), api.deviceChanges(), api.me()]);
+  // Shared refresh: memory facts, device changes (timeline), chat list, and profile.
+  const refreshMemory = useCallback(async () => {
+    const [mem, ch, chs, m] = await Promise.allSettled([api.memory(), api.deviceChanges(), api.chats(), api.me()]);
     if (mem.status === "fulfilled") setFacts(mem.value.facts ?? []);
     if (ch.status === "fulfilled") setChanges(ch.value ?? []);
+    if (chs.status === "fulfilled") setChats(sortChats(chs.value ?? []));
     if (m.status === "fulfilled") setMe(m.value);
   }, []);
 
@@ -53,11 +58,28 @@ export default function Chat() {
         setChats(list);
         setChatId(list[0].id);
         setMessages(await api.messages(list[0].id));
-        refreshSide();
       } catch (e) { toast(errMsg(e)); }
       setReady(true);
     })();
-  }, [router, toast, refreshSide]);
+  }, [router, toast]);
+
+  // Each chat carries its own memory toggle; load it on every chat switch.
+  useEffect(() => {
+    if (chatId == null) return;
+    const c = chats.find((x) => String(x.id) === String(chatId));
+    setMemoryEnabled(memoryPrefs[String(chatId)] ?? c?.memory_enabled ?? true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
+
+  const toggleMemory = (on: boolean) => {
+    setMemoryEnabled(on);
+    if (chatId != null) setMemoryPrefs((p) => ({ ...p, [String(chatId)]: on }));
+  };
+
+  // Re-fetch the memory panel on load and every chat switch.
+  useEffect(() => {
+    if (ready && chatId != null) refreshMemory();
+  }, [ready, chatId, refreshMemory]);
 
   // Re-fetch the current chat when opening the timeline so it is always up to date.
   useEffect(() => {
@@ -107,7 +129,7 @@ export default function Chat() {
     setLoading(true);
     try {
       const res = await api.chat({
-        message: body || "See attached.", chat_id: cid,
+        message: body || "See attached.", chat_id: cid, memory_enabled: memoryEnabled,
         ...(media ? { media_base64: media.base64, media_type: media.type } : {}),
       });
       const finalId = res.chat_id ?? cid;
@@ -124,8 +146,7 @@ export default function Chat() {
       setLive(res.recall && lastReply ? { id: String(lastReply.id), recall: res.recall } : null);
       setRecalled(res.memories ?? []);
       if (res.recall && lastReply) setQueries((p) => ({ ...p, [String(lastReply.id)]: res.recall!.query }));
-      api.chats().then((l) => setChats(sortChats(l))).catch(() => {});
-      refreshSide();
+      await refreshMemory();
       return true;
     } catch (e) {
       toast(errMsg(e));
@@ -136,17 +157,55 @@ export default function Chat() {
   };
 
   const editMessage = async (id: Id, content: string) => {
-    try { await api.editMessage(id, content); setMessages((p) => p.map((m) => (m.id === id ? { ...m, content } : m))); }
-    catch (e) { toast(errMsg(e)); }
+    if (loading) return;
+    try {
+      await api.editMessage(id, content); // backend also drops the stale assistant reply
+    } catch (e) { toast(errMsg(e)); return; }
+    setLive(null); setRecalled([]);
+    // Hide the old bubble, then ask again with the corrected text so a fresh reply comes back.
+    setMessages((p) => p.filter((m) => m.id !== id));
+    const ok = await send(content, null);
+    const cid = chatId;
+    if (ok) {
+      // The re-ask created a new user message; remove the superseded original to avoid a duplicate.
+      try { await api.deleteMessage(id); } catch { /* non-fatal */ }
+    }
+    if (cid != null) {
+      try {
+        const fresh = await api.messages(cid);
+        if (ok) {
+          const lastUser = [...fresh].reverse().find((m) => m.role === "user");
+          if (lastUser) setEditedIds((s) => new Set(s).add(String(lastUser.id)));
+        }
+        setMessages(fresh);
+      } catch (e) { toast(errMsg(e)); }
+    }
+    await refreshMemory();
+    if (ok) toast("Message updated — fresh reply generated");
   };
   const deleteMessage = async (id: Id) => {
-    try { await api.deleteMessage(id); setMessages((p) => p.filter((m) => m.id !== id)); refreshSide(); }
+    try { await api.deleteMessage(id); setMessages((p) => p.filter((m) => m.id !== id)); await refreshMemory(); }
     catch (e) { toast(errMsg(e)); }
   };
   const setOutcome = async (id: Id, value: Outcome) => {
-    try { await api.setOutcome(id, value); setMessages((p) => p.map((m) => (m.id === id ? { ...m, outcome: value } : m))); }
-    catch (e) { toast(errMsg(e)); }
+    try {
+      await api.setOutcome(id, value);
+      setMessages((p) => p.map((m) => (m.id === id ? { ...m, outcome: value } : m)));
+      await refreshMemory();
+    } catch (e) { toast(errMsg(e)); return; }
+    // Feed the result back into the conversation so the agent responds.
+    const followUp: Record<Outcome, string> = {
+      worked: "That worked, thanks!",
+      failed: "That didn't work. What else can I try?",
+      unsure: "I'm not sure if that worked yet. What should I check to find out?",
+    };
+    await send(followUp[value], null);
   };
+
+  const shownMessages = useMemo(
+    () => messages.map((m) => (m.edited || editedIds.has(String(m.id)) ? { ...m, edited: true } : m)),
+    [messages, editedIds],
+  );
 
   const logout = () => { clearToken(); router.push("/login"); };
   const d = me?.device;
@@ -165,6 +224,16 @@ export default function Chat() {
         </div>
         <div className="flex items-center gap-3 text-sm">
           {me && <span className="hidden text-ink-muted lg:inline">{me.name}{d ? ` · ${d.brand} ${d.model} · ${d.os_name} ${d.os_version}` : ""}</span>}
+          <div title="When ON, Engram remembers this chat. When OFF, nothing is saved."
+            className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-medium ${memoryEnabled
+              ? "border-amber-400 bg-amber-50 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200"
+              : "border-line bg-subtle text-ink-muted"}`}>
+            <span aria-hidden>🧠</span><span className="hidden sm:inline">Memory</span>
+            <button type="button" aria-pressed={memoryEnabled} onClick={() => toggleMemory(true)}
+              className={`rounded-full px-2 py-0.5 ${memoryEnabled ? "bg-amber-400 text-amber-950" : "hover:bg-line/40"}`}>ON</button>
+            <button type="button" aria-pressed={!memoryEnabled} onClick={() => toggleMemory(false)}
+              className={`rounded-full px-2 py-0.5 ${!memoryEnabled ? "bg-ink-muted text-surface" : "hover:bg-line/40"}`}>OFF</button>
+          </div>
           <ThemeToggle />
           <button onClick={logout} className="rounded-lg border border-line px-3 py-1.5 font-medium hover:bg-subtle">Logout</button>
         </div>
@@ -178,16 +247,16 @@ export default function Chat() {
           <div className="flex justify-center border-b border-line px-4 py-2">
             <div className="inline-flex gap-1 rounded-lg border border-line p-0.5">
               <button className={tab(view === "chat")} onClick={() => setView("chat")}>Chat</button>
-              <button className={tab(view === "timeline")} onClick={() => setView("timeline")}>Timeline</button>
+              <button className={tab(view === "timeline")} onClick={() => setView("timeline")}>History</button>
             </div>
           </div>
           {view === "chat"
-            ? <ChatPanel me={me} messages={messages} previews={previews} live={live} loading={loading}
-                onSend={send} onEdit={editMessage} onDelete={deleteMessage} onOutcome={setOutcome} notify={toast} />
+            ? <ChatPanel me={me} messages={shownMessages} previews={previews} live={live} loading={loading}
+                onSend={send} onEdit={editMessage} onDelete={deleteMessage} onOutcome={setOutcome} notify={toast} memoryEnabled={memoryEnabled} />
             : <TimelineView messages={messages} facts={facts} queries={queries} />}
         </div>
 
-        <MemoryPanel device={d ?? null} changes={changes} facts={facts} recalled={recalled} open={panelOpen} onClose={() => setPanelOpen(false)} />
+        <MemoryPanel device={d ?? null} changes={changes} facts={facts} recalled={recalled} memoryOff={!memoryEnabled} open={panelOpen} onClose={() => setPanelOpen(false)} />
       </div>
 
       <button onClick={() => setPanelOpen(true)} aria-label="Open memory panel"

@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { fmt } from "@/lib/format";
+import { cleanFactText, fmt } from "@/lib/format";
 import type { ApiMessage, Fact } from "@/lib/types";
 
 const EMPTY = "Nothing yet. Ask Engram something and it'll remember.";
@@ -62,7 +62,7 @@ export default function TimelineView({ messages, facts, queries = {} }: { messag
                   <li key={i} className="relative text-sm">
                     <span className="absolute -left-[21px] top-1.5 text-faint" aria-hidden>•</span>
                     <p className="text-xs text-ink-muted">{fmt(f.when)}</p>
-                    <p>{f.text}</p>
+                    <p>{cleanFactText(f.text)}</p>
                   </li>
                 ))}
               </ol>

@@ -14,7 +14,8 @@ const readFile = (file: File) =>
     r.readAsDataURL(file);
   });
 
-export default function ChatPanel({ me, messages, previews, live, loading, onSend, onEdit, onDelete, onOutcome, notify }: {
+export default function ChatPanel({ me, messages, previews, live, loading, onSend, onEdit, onDelete, onOutcome, notify, memoryEnabled = true }: {
+  memoryEnabled?: boolean;
   me: Me | null; messages: ApiMessage[]; previews: Record<string, Preview>;
   live: { id: string; recall: Recall } | null; loading: boolean;
   onSend: (text: string, media: Attachment | null) => Promise<boolean>;
@@ -61,7 +62,7 @@ export default function ChatPanel({ me, messages, previews, live, loading, onSen
           </div>
         )}
         {messages.map((m) => (
-          <MessageBubble key={m.id} m={m} preview={previews[String(m.id)]} pending={String(m.id).startsWith("tmp-")}
+          <MessageBubble key={m.id} m={m} preview={previews[String(m.id)]} pending={String(m.id).startsWith("tmp-")} memoryOff={!memoryEnabled && m.role !== "user"}
             recall={live && live.id === String(m.id) ? live.recall : undefined}
             onEdit={onEdit} onDelete={onDelete} onOutcome={onOutcome} />
         ))}

@@ -24,10 +24,17 @@ function normalize(x: unknown, defaultUsed?: boolean): Item[] {
   return out;
 }
 
-export default function RecallBox({ recall, usedMemories, explanation }: {
-  recall?: Recall; usedMemories?: unknown; explanation?: string | null;
+export default function RecallBox({ recall, usedMemories, explanation, memoryOff }: {
+  recall?: Recall; usedMemories?: unknown; explanation?: string | null; memoryOff?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  if (memoryOff) return (
+    <div className="text-xs">
+      <span className="inline-flex items-center gap-1.5 rounded-md bg-subtle px-2.5 py-1 font-medium text-ink-muted">
+        <span aria-hidden>🧠</span> Memory off — nothing stored
+      </span>
+    </div>
+  );
   const items = recall ? normalize(recall.matched) : normalize(usedMemories, true);
   if (!recall && items.length === 0 && !explanation) return null;
 

@@ -31,8 +31,8 @@ function Media({ m, preview }: { m: ApiMessage; preview?: Preview }) {
   );
 }
 
-export default function MessageBubble({ m, preview, recall, pending, onEdit, onDelete, onOutcome }: {
-  m: ApiMessage; preview?: Preview; recall?: Recall; pending?: boolean;
+export default function MessageBubble({ m, preview, recall, pending, memoryOff, onEdit, onDelete, onOutcome }: {
+  m: ApiMessage; preview?: Preview; recall?: Recall; pending?: boolean; memoryOff?: boolean;
   onEdit: (id: ApiMessage["id"], content: string) => void;
   onDelete: (id: ApiMessage["id"]) => void;
   onOutcome: (id: ApiMessage["id"], v: Outcome) => void;
@@ -65,7 +65,7 @@ export default function MessageBubble({ m, preview, recall, pending, onEdit, onD
             </div>
           </div>
         )}
-        <span className="text-[11px] text-faint">{fmt(m.created_at)}</span>
+        <span className="text-[11px] text-faint">{fmt(m.created_at)}{m.edited ? " (edited)" : ""}</span>
       </div>
     );
 
@@ -81,7 +81,7 @@ export default function MessageBubble({ m, preview, recall, pending, onEdit, onD
             <button className={iconBtn} aria-label="Delete message" title="Delete" onClick={() => onDelete(m.id)}><TrashIcon /></button>
           </div>
         </div>
-        <RecallBox recall={recall} usedMemories={m.used_memories} explanation={m.recall_explanation} />
+        <RecallBox recall={recall} usedMemories={m.used_memories} explanation={m.recall_explanation} memoryOff={memoryOff} />
         <div className="flex flex-wrap items-center gap-2">
           {OUTCOMES.map((o) => {
             const chosen = m.outcome === o.value;

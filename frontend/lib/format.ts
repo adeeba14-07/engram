@@ -10,3 +10,8 @@ export const fmt = (ts?: string | null): string => {
     hour: "2-digit", minute: "2-digit",
   });
 };
+
+export const STRONG_THRESHOLD = 0.25;
+
+// Backend facts look like "text | When: ... | Involving: ..." -- show only the text part.
+export const cleanFactText = (text?: string | null): string => (text ? text.split("|")[0].trim() : "");

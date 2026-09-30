@@ -1,13 +1,25 @@
 "use client";
 import { useState } from "react";
-import { fmt } from "@/lib/format";
+import { cleanFactText, fmt } from "@/lib/format";
 import type { Device, DeviceChange, Fact, Memory } from "@/lib/types";
 
-export default function MemoryPanel({ device, changes, facts, recalled, open, onClose }: {
+export default function MemoryPanel({ device, changes, facts, recalled, open, onClose, memoryOff }: {
+  memoryOff?: boolean;
   device: Device | null; changes: DeviceChange[]; facts: Fact[]; recalled: Memory[]; open: boolean; onClose: () => void;
 }) {
   const [showHistory, setShowHistory] = useState(false);
-  const timeline = [...facts].sort((a, b) => +new Date(b.when) - +new Date(a.when)).slice(0, 8);
+  const timeline = (() => {
+    const seen = new Set<string>();
+    return [...facts]
+      .sort((a, b) => +new Date(b.when) - +new Date(a.when))
+      .filter((f) => {
+        const k = cleanFactText(f.text).toLowerCase();
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(0, 8);
+  })();
   const rows: [string, string | number | null | undefined][] = device ? [
     ["Brand", device.brand], ["Model", device.model],
     ["OS", `${device.os_name} ${device.os_version}`.trim()],
@@ -32,6 +44,11 @@ export default function MemoryPanel({ device, changes, facts, recalled, open, on
         </div>
 
         <div className="space-y-6 p-5">
+          {memoryOff && (
+            <div role="status" className="rounded-xl border border-line bg-subtle px-3 py-2.5 text-sm font-medium text-ink-muted">
+              🧠 Memory is off for this chat
+            </div>
+          )}
           <section>
             <h3 className="mb-3 text-sm font-bold">Device</h3>
             {device ? (
@@ -74,7 +91,7 @@ export default function MemoryPanel({ device, changes, facts, recalled, open, on
                   <li key={i} className="relative text-sm">
                     <span className="absolute -left-[21px] top-0 text-faint" aria-hidden>•</span>
                     <p className="text-xs text-ink-muted">{fmt(f.when)}</p>
-                    <p>{f.text}</p>
+                    <p>{cleanFactText(f.text)}</p>
                   </li>
                 ))}
               </ol>
@@ -89,7 +106,7 @@ export default function MemoryPanel({ device, changes, facts, recalled, open, on
                   <li key={`${m.id}-${i}`} className={`rounded-xl border p-3 text-sm ${m.used
                     ? "border-amber-400 bg-amber-50 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200"
                     : "border-line bg-bubble text-ink-muted"}`}>
-                    <p>{m.text}</p>
+                    <p>{cleanFactText(m.text)}</p>
                     <p className="mt-1 text-xs opacity-75">• {fmt(m.when)}{m.score != null && ` · score ${m.score.toFixed(2)}`}</p>
                   </li>
                 ))}
