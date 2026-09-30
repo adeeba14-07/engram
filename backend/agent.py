@@ -126,14 +126,14 @@ def _classify_intent(message: str) -> str:
 
 # ----------------------------------------------------------- device detect ---
 BRAND_PATTERNS = {
-    "HP": [" hp ", " hewlett ", "hp laptop", "hp pavilion", "hp envy", "hp spectre"],
+    "HP": [" hp ", " hewlett", "hp laptop", "hp pavilion", "hp envy", "hp spectre"],
     "Dell": [" dell ", "dell laptop", "dell xps", "dell latitude", "dell inspiron"],
     "Lenovo": [" lenovo ", "lenovo laptop", "thinkpad", "ideapad", "lenovo yoga"],
     "Asus": [" asus ", "zenbook", "vivobook", "asus rog"],
     "Acer": [" acer ", "aspire", "predator"],
     "MSI": [" msi "],
     "Apple": [" apple ", "macbook", " mac "],
-    "Microsoft": [" microsoft ", "surface laptop", "surface pro", "surface book"],
+    "Microsoft": [" microsoft ", " surface laptop", " surface pro", " surface book", " surface "],
     "Samsung": [" samsung ", "galaxy book"],
     "Razer": [" razer "],
     "Huawei": [" huawei ", "matebook"],
@@ -159,9 +159,45 @@ MODEL_BRANDS = {
 }
 
 
+def _valid_age(value: int) -> bool:
+    """Age must be 0–360 months. 0 only allowed if user explicitly says so."""
+    return 0 <= value <= 360
+
+
+def _detect_brand(low: str, current_device: dict | None) -> str | None:
+    """Extract brand from the message. Handles 'from X to Y' patterns."""
+
+    # 1) "from X to Y" — the destination Y wins
+    m = re.search(r"\bfrom\s+([a-z]+)\s+to\s+([a-z]+)", low)
+    if m:
+        dest = m.group(2).strip()
+        for brand_name, keywords in BRAND_PATTERNS.items():
+            for kw in keywords:
+                k = kw.strip()
+                if dest == k or dest.startswith(k):
+                    return brand_name
+
+    # 2) "switched to X" / "changed to X" / "moved to X" / "to X"
+    m = re.search(r"\b(?:switched|changed|moved|switching|changing)\s+to\s+([a-z]+)", low)
+    if m:
+        dest = m.group(1).strip()
+        for brand_name, keywords in BRAND_PATTERNS.items():
+            for kw in keywords:
+                k = kw.strip()
+                if dest == k or dest.startswith(k):
+                    return brand_name
+
+    # 3) Any brand keyword present
+    for brand_name, keywords in BRAND_PATTERNS.items():
+        for kw in keywords:
+            if kw in low:
+                return brand_name
+
+    return None
+
+
 def detect_device_update(message: str, current_device: dict | None) -> dict | None:
-    """Parse OS / brand / model / age / RAM / storage / GPU / CPU changes.
-    Returns a dict of fields to update, or None."""
+    """Parse OS / brand / model / age / RAM / storage / GPU / CPU changes."""
     if not message:
         return None
     low = " " + message.lower() + " "
@@ -182,26 +218,20 @@ def detect_device_update(message: str, current_device: dict | None) -> dict | No
     elif " linux " in low:
         update["os_name"] = "Linux"
 
-    # ---------- Brand change ----------
+    # ---------- Brand ----------
     change_words = [
-        "switched to", "changed to", "moved to", "switching to",
-        "changing to", "new laptop is", "new laptop is a",
-        "now using", "using now", "bought a", "bought an", "got a",
-        "got an", "purchased a", "purchased an", "upgraded to a",
-        "upgraded to an", "have a", "have an", "i'm using a",
-        "i am using a", "my new", "replaced with",
+        "switched to", "switched from", "changed to", "moved to", "switching to",
+        "changing to", "new laptop is", "now using", "using now",
+        "bought a", "bought an", "got a", "got an", "purchased a", "purchased an",
+        "upgraded to a", "upgraded to an", "have a", "have an",
+        "i'm using a", "i am using a", "my new", "replaced with",
     ]
     change_ctx = any(w in low for w in change_words)
 
-    # Only consider brand change if there's contextual language
-    if change_ctx or "brand" in low or "switched from" in low:
-        for brand_name, keywords in BRAND_PATTERNS.items():
-            for kw in keywords:
-                if kw in low:
-                    update["brand"] = brand_name
-                    break
-            if "brand" in update:
-                break
+    detected_brand = _detect_brand(low, current_device)
+    if detected_brand:
+        if change_ctx or (current_device and current_device.get("brand") != detected_brand):
+            update["brand"] = detected_brand
 
     # ---------- Model ----------
     model_patterns = [
@@ -234,44 +264,90 @@ def detect_device_update(message: str, current_device: dict | None) -> dict | No
             break
 
     # ---------- Age ----------
-    m = re.search(r"(\d{1,4})\s*months?\s*old", low)
+    age_found = False
+
+    # "age is (not) X months" / "age is X"
+    m = re.search(r"age\s+(?:is\s+)?(?:not\s+)?(\d{1,4})\s*(?:months?|minths?|mnths?|mo)?", low)
     if m:
-        update["age_months"] = int(m.group(1))
-    else:
-        m = re.search(r"(\d{1,2})\s*years?\s*old", low)
-        if m:
-            update["age_months"] = int(m.group(1)) * 12
+        try:
+            val = int(m.group(1))
+            if _valid_age(val):
+                update["age_months"] = val
+                age_found = True
+        except ValueError:
+            pass
 
-    # "my laptop age is 100" or "age is 100" or "age: 100"
-    if "age_months" not in update and "age" in low:
-        m = re.search(r"age\s*(?:is|:|=|not|its|it'?s)?\s*(?:not\s+)?\d{1,4}\s*(?:it'?s|is)?\s*(\d{1,4})", low)
-        if not m:
-            m = re.search(r"age[^\d]{0,10}(\d{1,4})", low)
+    # "not X it's Y"
+    if not age_found:
+        m = re.search(r"not\s+\d{1,4}\s+(?:it'?s?|its?)\s+(\d{1,4})", low)
         if m:
-            update["age_months"] = int(m.group(1))
+            try:
+                val = int(m.group(1))
+                if _valid_age(val):
+                    update["age_months"] = val
+                    age_found = True
+            except ValueError:
+                pass
 
-    # "not 84 it's 100" pattern
-    if "age_months" not in update:
-        m = re.search(r"not\s+\d{1,4}\s*,?\s*it'?s?\s+(\d{1,4})", low)
+    # "X months/years old"
+    if not age_found:
+        m = re.search(r"(\d{1,4})\s*(?:months?|minths?|mnths?|mo)\s*old", low)
         if m:
-            update["age_months"] = int(m.group(1))
+            try:
+                val = int(m.group(1))
+                if _valid_age(val):
+                    update["age_months"] = val
+                    age_found = True
+            except ValueError:
+                pass
+
+    if not age_found:
+        m = re.search(r"(\d{1,2})\s*(?:years?|yrs?)\s*old", low)
+        if m:
+            try:
+                val = int(m.group(1)) * 12
+                if _valid_age(val):
+                    update["age_months"] = val
+                    age_found = True
+            except ValueError:
+                pass
+
+    # "X months" without "old" — reject version-number collisions
+    if not age_found:
+        m = re.search(r"(\d{1,4})\s*(?:months?|minths?|mnths?)", low)
+        if m:
+            try:
+                val = int(m.group(1))
+                if _valid_age(val) and val not in (10, 11, 12, 13, 14, 15, 16):
+                    update["age_months"] = val
+            except ValueError:
+                pass
 
     # ---------- RAM ----------
     m = re.search(r"(\d{1,3})\s*gb\s*(?:of\s*)?ram", low)
     if m:
-        update["ram_gb"] = int(m.group(1))
+        try:
+            update["ram_gb"] = int(m.group(1))
+        except ValueError:
+            pass
     elif " ram " in low:
         m = re.search(r"(\d{1,3})\s*gb", low)
         if m:
-            update["ram_gb"] = int(m.group(1))
+            try:
+                update["ram_gb"] = int(m.group(1))
+            except ValueError:
+                pass
 
     # ---------- Storage ----------
     m = re.search(r"(\d{1,4})\s*(gb|tb)\s*(?:of\s*)?(?:storage|ssd|hdd|disk)", low)
     if m:
-        val = int(m.group(1))
-        if m.group(2) == "tb":
-            val *= 1024
-        update["storage_gb"] = val
+        try:
+            val = int(m.group(1))
+            if m.group(2) == "tb":
+                val *= 1024
+            update["storage_gb"] = val
+        except ValueError:
+            pass
 
     # ---------- GPU ----------
     gpu_patterns = [
@@ -302,7 +378,7 @@ def detect_device_update(message: str, current_device: dict | None) -> dict | No
     if not update:
         return None
 
-    # ---------- Filter out unchanged values ----------
+    # ---------- Filter unchanged values ----------
     if current_device:
         filtered = {}
         for k, v in update.items():
@@ -316,7 +392,6 @@ def detect_device_update(message: str, current_device: dict | None) -> dict | No
     # ---------- Brand change with no new model → clear stale model ----------
     if "brand" in update and "model" not in update:
         if current_device and current_device.get("model"):
-            # Old model belongs to old brand → clear it
             update["model"] = None
 
     return update

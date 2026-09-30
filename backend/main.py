@@ -77,7 +77,7 @@ def _recent_outcomes(user_id, db, limit=5):
 
 def _apply_device_update(user_id, db, update: dict):
     """Persist device changes detected in chat.
-    Handles None values (clears field) and writes to device_changes."""
+    Safety: never writes age_months=0 when the previous value was non-zero."""
     if not update:
         return
     d = db.query(Device).filter(Device.user_id == user_id).first()
@@ -87,10 +87,16 @@ def _apply_device_update(user_id, db, update: dict):
     os_changed = False
     for field, new_val in update.items():
         old_val = getattr(d, field, None)
+
+        # Refuse to overwrite a valid age with 0 (parser fallback guard)
+        if field == "age_months":
+            if new_val == 0 and old_val and old_val != 0:
+                print(f"SKIP age_months=0 (old={old_val})")
+                continue
+
         if old_val == new_val:
             continue
 
-        # Record the change
         db.add(DeviceChange(
             id=str(uuid4()),
             user_id=user_id,
@@ -221,7 +227,6 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user),
     except Exception as e:
         raise HTTPException(500, f"Chat failed: {e}")
 
-    # Persist device changes detected in chat
     try:
         _apply_device_update(user.id, db, result.get("device_update"))
     except Exception as e:
