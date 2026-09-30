@@ -288,10 +288,21 @@ def delete_chat(chat_id: str, user: User = Depends(get_current_user),
                               Chat.user_id == user.id).first()
     if not c:
         raise HTTPException(404, "Chat not found")
-    msgs = db.query(Message).filter(Message.chat_id == chat_id).all()
-    for m in msgs:
-        db.query(Outcome).filter(Outcome.message_id == m.id).delete()
-        db.delete(m)
+
+    # 1. Get all message ids in this chat
+    msg_ids = [m.id for m in db.query(Message)
+               .filter(Message.chat_id == chat_id).all()]
+
+    # 2. Bulk-delete outcomes for those messages (before messages)
+    if msg_ids:
+        db.query(Outcome).filter(Outcome.message_id.in_(msg_ids))\
+            .delete(synchronize_session=False)
+
+    # 3. Bulk-delete messages
+    db.query(Message).filter(Message.chat_id == chat_id)\
+        .delete(synchronize_session=False)
+
+    # 4. Delete the chat
     db.delete(c)
     db.commit()
     return {"ok": True}
@@ -331,6 +342,11 @@ def delete_message(message_id: str, user: User = Depends(get_current_user),
     if not m:
         raise HTTPException(404, "Message not found")
     content = m.content
+
+    # Bulk-delete outcomes first (avoids FK violation on flush)
+    db.query(Outcome).filter(Outcome.message_id == message_id)\
+        .delete(synchronize_session=False)
+
     m.deleted = True
     db.commit()
     try:
