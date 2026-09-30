@@ -75,6 +75,28 @@ def _recent_outcomes(user_id, db, limit=5):
     return out
 
 
+def _apply_device_update(user_id, db, update: dict):
+    """Persist device changes detected in chat. Writes to devices + device_changes."""
+    if not update:
+        return
+    d = db.query(Device).filter(Device.user_id == user_id).first()
+    if not d:
+        return
+    for field, new_val in update.items():
+        old_val = getattr(d, field, None)
+        if old_val == new_val:
+            continue
+        db.add(DeviceChange(
+            id=str(uuid4()), user_id=user_id, field=field,
+            old_value=str(old_val) if old_val is not None else None,
+            new_value=str(new_val),
+        ))
+        setattr(d, field, new_val)
+        if field in ("os_name", "os_version"):
+            d.os_updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+
 @app.post("/api/auth/signup", response_model=AuthResponse)
 def signup(body: SignupRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
@@ -186,6 +208,12 @@ def chat(body: ChatRequest, user: User = Depends(get_current_user),
         )
     except Exception as e:
         raise HTTPException(500, f"Chat failed: {e}")
+
+    # Persist device changes detected in chat
+    try:
+        _apply_device_update(user.id, db, result.get("device_update"))
+    except Exception as e:
+        print(f"DEVICE UPDATE FAILED: {e}")
 
     used = [m for m in result["memories"] if m.get("used_in_prompt")]
     asst_msg = Message(
@@ -308,7 +336,6 @@ def edit_message(message_id: str, body: EditMessageRequest,
     m.recall_explanation = None
     db.commit()
 
-    # Delete the assistant reply that followed this message
     next_msg = db.query(Message).filter(
         Message.chat_id == m.chat_id,
         Message.user_id == user.id,
